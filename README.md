@@ -25,7 +25,7 @@ Update each row's **Status** as work moves from **Not started** to **In progress
 
 ### Part 1 benchmark baseline
 
-The supplied Makefiles built both benchmarks with `-m32` in Debian 12, and both passed under QEMU i386 before adding the TLB. The three 400-byte allocations started at `1000`, `2000`, and `3000` (hex). `./test` printed the following result and then `free function works`.
+The supplied Makefiles built both benchmarks with `-m32` on Rutgers `ilab1.cs.rutgers.edu`, and both passed before adding the TLB. The three 400-byte allocations started at `1000`, `2000`, and `3000` (hex). `./test` printed the following result and then `free function works`.
 
 ```text
 5 5 5 5 5
@@ -51,7 +51,7 @@ Start this part after the page-table and allocation code works and the Part 1 ma
 
 ### Part 2 benchmark results
 
-The Debian 12 `-m32` build passed `./test` and `./mtest` under QEMU i386. With 512 entries and 4 KiB pages, `./test` printed `TLB miss rate 0.007444` (3 compulsory misses and 400 hits) and retained the Part 1 matrix result. With 8 KiB pages and 64 MiB RAM, both benchmarks passed with 3 TLB entries. With 1 entry, `./test` still passed and the miss rate rose to `0.937965`. Native sanitizer checks verified collisions, refills, and invalidation with 1, 3, and 512 entries.
+On Rutgers `ilab1.cs.rutgers.edu`, both benchmarks passed as native 32-bit x86 binaries. With 512 entries and 4 KiB pages, `./test` printed `TLB miss rate 0.007444` (3 compulsory misses and 400 hits) and retained the Part 1 matrix result. With 64 MiB RAM, both benchmarks passed on iLab for 4 KiB pages with 512 entries, 8 KiB pages with 3 or 1 entries, and 16 KiB pages with 3 entries. At 8 KiB with 1 entry, the miss rate was `0.937965`. Native sanitizer checks verified collisions, refills, and invalidation with 1, 3, and 512 entries.
 
 ## Build and verify
 
