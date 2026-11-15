@@ -33,7 +33,7 @@ struct tlb {
     */
 
 };
-struct tlb tlb_store;
+extern struct tlb tlb_store;
 
 
 void set_physical_mem();

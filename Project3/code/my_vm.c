@@ -260,6 +260,8 @@ void set_physical_mem()
  */
 int add_TLB(void *va, void *pa)
 {
+    (void)va;
+    (void)pa;
 
     /*Part 2 HINT: Add a virtual to physical page translation to the TLB */
 
@@ -275,9 +277,9 @@ pte_t *
 check_TLB(void *va)
 {
 
-    /* Part 2: TLB lookup code here */
+    (void)va;
 
-    /*This function should return a pte_t pointer*/
+    return NULL;
 }
 
 /*
@@ -319,106 +321,191 @@ int page_map(pde_t *pgdir, void *va, void *pa)
     return result;
 }
 
-/*Function that gets the next available page
- */
+/* Find a contiguous run of virtual pages while holding vm_lock. */
+static uintptr_t next_virtual_range(uint64_t count)
+{
+    uint64_t run = 0;
+    for (uint64_t page = VM_FIRST_VIRTUAL_PAGE; page < layout.virtual_pages; page++) {
+        run = bitmap_test(virtual_bitmap, page) ? 0 : run + 1;
+        if (run == count)
+            return (uintptr_t)((page + 1 - count) * PGSIZE);
+    }
+    return 0;
+}
+
 void *get_next_avail(int num_pages)
 {
-
-    // Use virtual address bitmap to find the next free page
+    if (num_pages <= 0)
+        return NULL;
+    pthread_mutex_lock(&vm_lock);
+    uintptr_t address = 0;
+    if (initialize_memory_locked() == 0)
+        address = next_virtual_range((uint64_t)num_pages);
+    pthread_mutex_unlock(&vm_lock);
+    return (void *)address;
 }
 
-/* Function responsible for allocating pages
-and used by the benchmark
-*/
+static void unmap_page(uint32_t address)
+{
+    pde_t *directory_entry = &page_directory[directory_index(address)];
+    uint32_t table_frame = entry_frame(*directory_entry);
+    pte_t *table = (pte_t *)(physical_memory + (size_t)table_frame * PGSIZE);
+    pte_t *entry = &table[table_index(address)];
+
+    bitmap_clear(physical_bitmap, entry_frame(*entry));
+    bitmap_clear(virtual_bitmap, virtual_page_number(address));
+    *entry = 0;
+    for (uint64_t index = 0; index < layout.table_entries; index++) {
+        if (entry_is_valid(table[index]))
+            return;
+    }
+    *directory_entry = 0;
+    for (size_t index = 0; index < layout.table_frames; index++)
+        bitmap_clear(physical_bitmap, table_frame + index);
+}
+
 void *t_malloc(unsigned int num_bytes)
 {
+    if (num_bytes == 0)
+        return NULL;
 
-    /*
-     * HINT: If the physical memory is not yet initialized, then allocate and initialize.
-     */
-
-    /*
-     * HINT: If the page directory is not initialized, then initialize the
-     * page directory. Next, using get_next_avail(), check if there are free pages. If
-     * free pages are available, set the bitmaps and map a new page. Note, you will
-     * have to mark which physical pages are used.
-     */
-
-    return NULL;
+    uint64_t count = pages_for_bytes(num_bytes);
+    uintptr_t first = 0;
+    pthread_mutex_lock(&vm_lock);
+    if (initialize_memory_locked() == 0 && count < layout.physical_frames)
+        first = next_virtual_range(count);
+    if (first != 0) {
+        uint64_t mapped = 0;
+        uint64_t frame = 0;
+        while (mapped < count) {
+            while (frame < layout.physical_frames && bitmap_test(physical_bitmap, frame))
+                frame++;
+            if (frame == layout.physical_frames)
+                break;
+            uintptr_t address = (uintptr_t)(first + mapped * PGSIZE);
+            unsigned char *page = physical_memory + frame * PGSIZE;
+            if (page_map_locked(page_directory, (void *)address, page) != 0)
+                break;
+            memset(page, 0, PGSIZE);
+            mapped++;
+            frame++;
+        }
+        if (mapped != count) {
+            while (mapped > 0) {
+                mapped--;
+                unmap_page((uint32_t)(first + mapped * PGSIZE));
+            }
+            first = 0;
+        }
+    }
+    pthread_mutex_unlock(&vm_lock);
+    return (void *)first;
 }
 
-/* Responsible for releasing one or more memory pages using virtual address (va)
- */
+/* Validate the full byte range before freeing or copying any pages. */
+static bool range_is_mapped(uintptr_t address, uint64_t size)
+{
+    if (physical_memory == NULL || address < PGSIZE ||
+        address >= (uint64_t)MAX_MEMSIZE ||
+        size > (uint64_t)MAX_MEMSIZE - address || size == 0)
+        return false;
+    uint32_t first = virtual_page_number((uint32_t)address);
+    uint32_t last = virtual_page_number((uint32_t)(address + size - 1));
+    for (uint32_t page = first; page <= last; page++) {
+        if (!bitmap_test(virtual_bitmap, page))
+            return false;
+    }
+    return true;
+}
+
 void t_free(void *va, int size)
 {
-
-    /* Part 1: Free the page table entries starting from this virtual address
-     * (va). Also mark the pages free in the bitmap. Perform free only if the
-     * memory from "va" to va+size is valid.
-     *
-     * Part 2: Also, remove the translation from the TLB
-     */
+    uintptr_t address = (uintptr_t)va;
+    pthread_mutex_lock(&vm_lock);
+    if (size <= 0 || address % PGSIZE != 0 ||
+        !range_is_mapped(address, (uint64_t)size)) {
+        fprintf(stderr, "Cannot free an invalid virtual memory range\n");
+    } else {
+        uint64_t end = (uint64_t)address + size;
+        for (uint64_t page = address; page < end; page += PGSIZE)
+            unmap_page((uint32_t)page);
+    }
+    pthread_mutex_unlock(&vm_lock);
 }
 
-/* The function copies data pointed by "val" to physical
- * memory pages using virtual address (va)
- * The function returns 0 if the put is successfull and -1 otherwise.
- */
+static int copy_value(void *va, void *val, int size, bool write)
+{
+    if (size == 0)
+        return 0;
+
+    uintptr_t address = (uintptr_t)va;
+    unsigned char *buffer = val;
+    pthread_mutex_lock(&vm_lock);
+    if (size < 0 || val == NULL || !range_is_mapped(address, (uint64_t)size)) {
+        pthread_mutex_unlock(&vm_lock);
+        fprintf(stderr, "Cannot access an invalid virtual memory range\n");
+        return -1;
+    }
+
+    size_t remaining = (size_t)size;
+    while (remaining > 0) {
+        size_t chunk = PGSIZE - page_offset((uint32_t)address);
+        if (chunk > remaining)
+            chunk = remaining;
+        void *physical = translate_locked(page_directory, (void *)address);
+        if (write)
+            memcpy(physical, buffer, chunk);
+        else
+            memcpy(buffer, physical, chunk);
+        address += chunk;
+        buffer += chunk;
+        remaining -= chunk;
+    }
+    pthread_mutex_unlock(&vm_lock);
+    return 0;
+}
+
 int put_value(void *va, void *val, int size)
 {
-
-    /* HINT: Using the virtual address and translate(), find the physical page. Copy
-     * the contents of "val" to a physical page. NOTE: The "size" value can be larger
-     * than one page. Therefore, you may have to find multiple pages using translate()
-     * function.
-     */
-
-    /*return -1 if put_value failed and 0 if put is successfull*/
+    return copy_value(va, val, size, true);
 }
 
-/*Given a virtual address, this function copies the contents of the page to val*/
 void get_value(void *va, void *val, int size)
 {
-
-    /* HINT: put the values pointed to by "va" inside the physical memory at given
-     * "val" address. Assume you can access "val" directly by derefencing them.
-     */
+    if (copy_value(va, val, size, false) != 0)
+        exit(EXIT_FAILURE);
 }
 
-/*
-This function receives two matrices mat1 and mat2 as an argument with size
-argument representing the number of rows and columns. After performing matrix
-multiplication, copy the result to answer.
-*/
 void mat_mult(void *mat1, void *mat2, int size, void *answer)
 {
+    if (size <= 0)
+        return;
+    uint64_t matrix_bytes = (uint64_t)size * size * sizeof(unsigned int);
+    uint64_t limit = (uint64_t)MAX_MEMSIZE;
+    uintptr_t left = (uintptr_t)mat1;
+    uintptr_t right = (uintptr_t)mat2;
+    uintptr_t result = (uintptr_t)answer;
+    if (left >= limit || right >= limit || result >= limit ||
+        matrix_bytes > limit - left || matrix_bytes > limit - right ||
+        matrix_bytes > limit - result) {
+        fprintf(stderr, "Matrix exceeds the virtual address space\n");
+        return;
+    }
 
-    /* Hint: You will index as [i * size + j] where  "i, j" are the indices of the
-     * matrix accessed. Similar to the code in test.c, you will use get_value() to
-     * load each element and perform multiplication. Take a look at test.c! In addition to
-     * getting the values from two matrices, you will perform multiplication and
-     * store the result to the "answer array"
-     */
-    int x, y, val_size = sizeof(int);
-    int i, j, k;
-    for (i = 0; i < size; i++)
-    {
-        for (j = 0; j < size; j++)
-        {
-            unsigned int a, b, c = 0;
-            for (k = 0; k < size; k++)
-            {
-                int address_a = (unsigned int)mat1 + ((i * size * sizeof(int))) + (k * sizeof(int));
-                int address_b = (unsigned int)mat2 + ((k * size * sizeof(int))) + (j * sizeof(int));
-                get_value((void *)address_a, &a, sizeof(int));
-                get_value((void *)address_b, &b, sizeof(int));
-                // printf("Values at the index: %d, %d, %d, %d, %d\n",
-                //     a, b, size, (i * size + k), (k * size + j));
-                c += (a * b);
+    for (int row = 0; row < size; row++) {
+        for (int column = 0; column < size; column++) {
+            unsigned int sum = 0;
+            for (int index = 0; index < size; index++) {
+                uintptr_t left_offset = ((uint64_t)row * size + index) * sizeof(sum);
+                uintptr_t right_offset = ((uint64_t)index * size + column) * sizeof(sum);
+                unsigned int a, b;
+                get_value((void *)(left + left_offset), &a, sizeof(a));
+                get_value((void *)(right + right_offset), &b, sizeof(b));
+                sum += a * b;
             }
-            int address_c = (unsigned int)answer + ((i * size * sizeof(int))) + (j * sizeof(int));
-            // printf("This is the c: %d, address: %x!\n", c, address_c);
-            put_value((void *)address_c, (void *)&c, sizeof(int));
+            uintptr_t offset = ((uint64_t)row * size + column) * sizeof(sum);
+            if (put_value((void *)(result + offset), &sum, sizeof(sum)) != 0)
+                return;
         }
     }
 }

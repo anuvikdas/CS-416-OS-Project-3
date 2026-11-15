@@ -1,5 +1,6 @@
 #include "../my_vm.h"
 #include <time.h>
+#include <pthread.h>
 #define num_threads 15
 
 void *pointers[num_threads];
@@ -39,6 +40,7 @@ void *mat_mem(void *id_arg) {
 void *free_mem(void *id_arg) {
     int id = *((int *)id_arg);
     t_free(pointers[id], alloc_size);
+    return NULL;
 }
 
 int main() {
