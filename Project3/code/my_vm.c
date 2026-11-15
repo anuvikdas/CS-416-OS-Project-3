@@ -38,6 +38,11 @@ static unsigned char *virtual_bitmap;
 static unsigned char *physical_bitmap;
 static pde_t *page_directory;
 static pthread_mutex_t vm_lock = PTHREAD_MUTEX_INITIALIZER;
+struct tlb tlb_store;
+static uint64_t tlb_hits;
+static uint64_t tlb_misses;
+
+_Static_assert(TLB_ENTRIES > 0, "The TLB needs at least one entry");
 
 /* Quotient/remainder rounding avoids overflow from adding PGSIZE - 1. */
 static uint64_t pages_for_bytes(uint64_t bytes)
@@ -182,13 +187,40 @@ static int initialize_memory_locked(void)
     return 0;
 }
 
-static pte_t *translate_locked(pde_t *pgdir, void *va)
+static struct tlb_entry *tlb_slot(uint32_t page)
 {
-    uintptr_t address = (uintptr_t)va;
-    if (physical_memory == NULL || pgdir != page_directory ||
-        address >= (uint64_t)MAX_MEMSIZE || address < PGSIZE)
-        return NULL;
+    return &tlb_store.entries[page % TLB_ENTRIES];
+}
 
+static void cache_page(uint32_t address, uint32_t frame)
+{
+    uint32_t page = virtual_page_number(address);
+    *tlb_slot(page) = (struct tlb_entry){true, page, frame};
+}
+
+static void cache_new_page(uint32_t address, const void *physical)
+{
+    uint32_t frame = (uint32_t)(((const unsigned char *)physical -
+                                 physical_memory) / PGSIZE);
+    tlb_misses++;
+    cache_page(address, frame);
+}
+
+static pte_t *cached_translation(uint32_t address)
+{
+    uint32_t page = virtual_page_number(address);
+    const struct tlb_entry *entry = tlb_slot(page);
+    if (!entry->valid || entry->virtual_page != page) {
+        tlb_misses++;
+        return NULL;
+    }
+    tlb_hits++;
+    return (pte_t *)(physical_memory + (size_t)entry->physical_frame * PGSIZE +
+                    page_offset(address));
+}
+
+static pte_t *walk_page_table(pde_t *pgdir, uint32_t address)
+{
     pde_t directory_entry = pgdir[directory_index((uint32_t)address)];
     if (!entry_is_valid(directory_entry))
         return NULL;
@@ -201,6 +233,25 @@ static pte_t *translate_locked(pde_t *pgdir, void *va)
         return NULL;
     return (pte_t *)(physical_memory + (size_t)entry_frame(entry) * PGSIZE +
                     page_offset((uint32_t)address));
+}
+
+static pte_t *translate_locked(pde_t *pgdir, void *va)
+{
+    uintptr_t address = (uintptr_t)va;
+    if (physical_memory == NULL || pgdir != page_directory ||
+        address >= (uint64_t)MAX_MEMSIZE || address < PGSIZE)
+        return NULL;
+
+    pte_t *physical = cached_translation((uint32_t)address);
+    if (physical != NULL)
+        return physical;
+
+    physical = walk_page_table(pgdir, (uint32_t)address);
+    if (physical != NULL) {
+        size_t offset = (unsigned char *)physical - physical_memory;
+        cache_page((uint32_t)address, (uint32_t)(offset / PGSIZE));
+    }
+    return physical;
 }
 
 /* Mapping owns the supplied free frame on success; it never replaces a map.
@@ -254,45 +305,54 @@ void set_physical_mem()
     pthread_mutex_unlock(&vm_lock);
 }
 
-/*
- * Part 2: Add a virtual to physical page translation to the TLB.
- * Feel free to extend the function arguments or return type.
- */
 int add_TLB(void *va, void *pa)
 {
-    (void)va;
-    (void)pa;
-
-    /*Part 2 HINT: Add a virtual to physical page translation to the TLB */
-
-    return -1;
+    uintptr_t address = (uintptr_t)va;
+    int result = -1;
+    pthread_mutex_lock(&vm_lock);
+    if (physical_memory != NULL && address >= PGSIZE &&
+        address < (uint64_t)MAX_MEMSIZE) {
+        uint32_t page_address = (uint32_t)address & ~layout.offset_mask;
+        pte_t *mapped_page = walk_page_table(page_directory, page_address);
+        if (mapped_page != NULL && (void *)mapped_page == pa) {
+            size_t offset = (unsigned char *)mapped_page - physical_memory;
+            cache_page(page_address, (uint32_t)(offset / PGSIZE));
+            result = 0;
+        }
+    }
+    pthread_mutex_unlock(&vm_lock);
+    return result;
 }
 
-/*
- * Part 2: Check TLB for a valid translation.
- * Returns the physical page address.
- * Feel free to extend this function and change the return type.
- */
-pte_t *
-check_TLB(void *va)
+pte_t *check_TLB(void *va)
 {
-
-    (void)va;
-
-    return NULL;
+    uintptr_t address = (uintptr_t)va;
+    pte_t *physical = NULL;
+    pthread_mutex_lock(&vm_lock);
+    if (physical_memory != NULL && address >= PGSIZE &&
+        address < (uint64_t)MAX_MEMSIZE)
+        physical = cached_translation((uint32_t)address);
+    pthread_mutex_unlock(&vm_lock);
+    return physical;
 }
 
-/*
- * Part 2: Print TLB miss rate.
- * Feel free to extend the function arguments or return type.
- */
+bool check_in_tlb(void *va)
+{
+    return check_TLB(va) != NULL;
+}
+
+void put_in_tlb(void *va, void *pa)
+{
+    add_TLB(va, pa);
+}
+
 void print_TLB_missrate()
 {
-    double miss_rate = 0;
-
-    /*Part 2 Code here to calculate and print the TLB miss rate*/
-
-    fprintf(stderr, "TLB miss rate %lf \n", miss_rate);
+    pthread_mutex_lock(&vm_lock);
+    uint64_t total = tlb_hits + tlb_misses;
+    double miss_rate = total == 0 ? 0.0 : (double)tlb_misses / total;
+    pthread_mutex_unlock(&vm_lock);
+    fprintf(stderr, "TLB miss rate %lf\n", miss_rate);
 }
 
 /*
@@ -317,6 +377,8 @@ int page_map(pde_t *pgdir, void *va, void *pa)
 {
     pthread_mutex_lock(&vm_lock);
     int result = page_map_locked(pgdir, va, pa);
+    if (result == 0)
+        cache_new_page((uint32_t)(uintptr_t)va, pa);
     pthread_mutex_unlock(&vm_lock);
     return result;
 }
@@ -353,7 +415,11 @@ static void unmap_page(uint32_t address)
     pte_t *entry = &table[table_index(address)];
 
     bitmap_clear(physical_bitmap, entry_frame(*entry));
-    bitmap_clear(virtual_bitmap, virtual_page_number(address));
+    uint32_t page = virtual_page_number(address);
+    bitmap_clear(virtual_bitmap, page);
+    struct tlb_entry *cached = tlb_slot(page);
+    if (cached->valid && cached->virtual_page == page)
+        cached->valid = false;
     *entry = 0;
     for (uint64_t index = 0; index < layout.table_entries; index++) {
         if (entry_is_valid(table[index]))
@@ -396,6 +462,11 @@ void *t_malloc(unsigned int num_bytes)
                 unmap_page((uint32_t)(first + mapped * PGSIZE));
             }
             first = 0;
+        } else {
+            for (uint64_t index = 0; index < count; index++) {
+                uint32_t address = (uint32_t)(first + index * PGSIZE);
+                cache_new_page(address, walk_page_table(page_directory, address));
+            }
         }
     }
     pthread_mutex_unlock(&vm_lock);

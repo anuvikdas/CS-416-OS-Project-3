@@ -57,6 +57,7 @@ int main() {
         }
         printf("\n");
     }
+    print_TLB_missrate();
     printf("Freeing the allocations!\n");
     t_free(a, ARRAY_SIZE);
     t_free(b, ARRAY_SIZE);

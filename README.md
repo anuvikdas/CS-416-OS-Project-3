@@ -43,11 +43,15 @@ Start this part after the page-table and allocation code works and the Part 1 ma
 
 | Task | Done when | Owner | Status |
 | --- | --- | --- | --- |
-| Initialize the TLB | Initialize empty entries with the page table. Store a valid bit or equivalent, a virtual page number, and a physical page number. Use `TLB_ENTRIES` from `my_vm.h` and support different entry counts. | | Not started |
-| Look up translations | Check the TLB before walking the page table. Verify the virtual page number in the indexed entry. On a hit, apply the offset and skip the walk. On a miss, walk the table and cache the translation if found. | | Not started |
-| Insert and evict | Add translations after mapping new pages and after successful page-table lookups on misses. Replace the existing entry at the same index when entries conflict. The PDF calls these helpers `check_TLB()` and `add_TLB()`. Keep the signatures declared in the starter header for `check_in_tlb()` and `put_in_tlb()`. | | Not started |
-| Keep translations current | Invalidate cached translations for freed virtual pages so a stale hit cannot access reclaimed physical memory. Protect TLB entries and statistics under concurrent calls. | | Not started |
-| Report the miss rate | Track hits and misses, account for compulsory misses as described in FAQ 14, and implement `print_TLB_missrate()` using the definition from class. Save the observed rate for the report. | | Not started |
+| Initialize the TLB | Initialize empty entries with the page table. Store a valid bit or equivalent, a virtual page number, and a physical page number. Use `TLB_ENTRIES` from `my_vm.h` and support different entry counts. | | Completed |
+| Look up translations | Check the TLB before walking the page table. Verify the virtual page number in the indexed entry. On a hit, apply the offset and skip the walk. On a miss, walk the table and cache the translation if found. | | Completed |
+| Insert and evict | Add translations after mapping new pages and after successful page-table lookups on misses. Replace the existing entry at the same index when entries conflict. The PDF calls these helpers `check_TLB()` and `add_TLB()`. Keep the signatures declared in the starter header for `check_in_tlb()` and `put_in_tlb()`. | | Completed |
+| Keep translations current | Invalidate cached translations for freed virtual pages so a stale hit cannot access reclaimed physical memory. Protect TLB entries and statistics under concurrent calls. | | Completed |
+| Report the miss rate | Track hits and misses, account for compulsory misses as described in FAQ 14, and implement `print_TLB_missrate()` using the definition from class. Save the observed rate for the report. | | Completed |
+
+### Part 2 benchmark results
+
+The Debian 12 `-m32` build passed `./test` and `./mtest` under QEMU i386. With 512 entries and 4 KiB pages, `./test` printed `TLB miss rate 0.007444` (3 compulsory misses and 400 hits) and retained the Part 1 matrix result. With 8 KiB pages and 64 MiB RAM, both benchmarks passed with 3 TLB entries. With 1 entry, `./test` still passed and the miss rate rose to `0.937965`. Native sanitizer checks verified collisions, refills, and invalidation with 1, 3, and 512 entries.
 
 ## Build and verify
 
@@ -57,7 +61,7 @@ Use the provided Makefiles with `-m32`. Build the library before the benchmark. 
 | --- | --- | --- | --- |
 | Build | From the repository root, run `make -C Project3/code` and then `make -C Project3/code/benchmark`. | | Completed |
 | Verify Part 1 | Run `./test` from `Project3/code/benchmark` and save the output before adding the TLB. Exercise single-page and multi-page allocation, reads and writes across boundaries, noncontiguous physical backing, and invalid frees. | | Completed |
-| Verify Part 2 | Run the benchmark again and record the miss rate. Check TLB hits, misses, index collisions, invalidation after a free, and changed `TLB_ENTRIES` values. | | Not started |
+| Verify Part 2 | Run the benchmark again and record the miss rate. Check TLB hits, misses, index collisions, invalidation after a free, and changed `TLB_ENTRIES` values. | | Completed |
 | Test memory configurations | Rebuild and test with different supported power-of-two page sizes in multiples of 4 KiB and with different simulated physical memory sizes. Record the configurations and outcomes. | | Completed |
 | Test concurrency | Run `./mtest` from `Project3/code/benchmark`. Extend the sample or vary the thread count as needed. FAQ 5 says up to 50 threads is sufficient. | | Completed |
 
@@ -65,11 +69,11 @@ Use the provided Makefiles with `-m32`. Build the library before the benchmark. 
 
 | Task | Done when | Owner | Status |
 | --- | --- | --- | --- |
-| Explain the implementation | Describe the logic of each virtual memory function and document any helper extensions. | | Not started |
-| Include benchmark results | Include the Part 1 benchmark output and the observed Part 2 TLB miss rate. | | Not started |
-| Document page-size support | Explain how the implementation supports different page sizes in multiples of 4 KiB. | | Not started |
-| List known issues | Describe any remaining issues or limitations. | | Not started |
-| Prepare the report PDF | Include the project partner's name and NetID, if applicable, and export the report as a PDF. | | Not started |
+| Explain the implementation | Describe the logic of each virtual memory function and document any helper extensions. | | Completed |
+| Include benchmark results | Include the Part 1 benchmark output and the observed Part 2 TLB miss rate. | | Completed |
+| Document page-size support | Explain how the implementation supports different page sizes in multiples of 4 KiB. | | Completed |
+| List known issues | Describe any remaining issues or limitations. | | Completed |
+| Prepare the report PDF | Include the project partner's name and NetID, if applicable, and export the report as a PDF. | | Completed |
 
 ## Canvas submission
 
