@@ -75,6 +75,26 @@ Use the provided Makefiles with `-m32`. Build the library before the benchmark. 
 | List known issues | Describe any remaining issues or limitations. | | Completed |
 | Prepare the report PDF | Include the project partner's name and NetID, if applicable, and export the report as a PDF. | | Completed |
 
+## Final review
+
+The allocator uses separate packed bitmaps to find contiguous virtual pages and available physical frames. A two-level page table stored in simulated RAM connects the two. At 4 KiB, the 32-bit address uses 10 directory bits, 10 table bits, and 12 offset bits. Other supported page sizes derive the split from `PGSIZE`.
+
+Allocation rounds up to whole pages and rolls back if it cannot map the full request. Freeing validates the whole range before releasing any pages and clears the corresponding TLB entries. Reads and writes split at page boundaries, so they work even when neighboring virtual pages use nonadjacent physical frames. Matrix multiplication uses those same read and write functions, and a mutex protects the shared allocator and TLB state.
+
+The direct-mapped TLB checks the virtual page tag before using a cached frame. A hit skips the page-table walk. A successful walk refills the slot on a miss, and a new mapping counts as a compulsory miss.
+
+The [project report draft](https://docs.google.com/document/d/1GLhLFKy7qfzgBap62JYOmyGq_GJtOG5VDsF09Sd6cOg/edit?tab=t.0) records these runs with 512 TLB entries and 15 threads in `multi_test.c`:
+
+| Page size | Three 400-byte allocations (`test`) | `test` TLB miss rate | `multi_test` |
+| --- | --- | --- | --- |
+| 4 KiB | `0x1000`, `0x2000`, `0x3000` | 0.007444 | Sampled matrix correct; freed address reused |
+| 8 KiB | `0x2000`, `0x4000`, `0x6000` | 0.007444 | Sampled matrix correct; freed address reused |
+| 16 KiB | `0x4000`, `0x8000`, `0xC000` | 0.007444 | Sampled matrix correct; freed address reused |
+
+In each single-threaded run, the result was a 5×5 matrix of fives and the allocator reused the first freed address. Each array fits on one page at all three page sizes, giving 3 compulsory misses and 400 hits (0.7444%). The supplied multithreaded benchmark does not print a miss rate.
+
+The [final report PDF](Project3/CS-416-Project-3-Report.pdf) includes the pre-TLB Part 1 output, the Part 2 miss rate, and implementation limitations.
+
 ## Canvas submission
 
 | Task | Done when | Owner | Status |
